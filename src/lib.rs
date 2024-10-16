@@ -63,46 +63,120 @@ fn gen_trait_bounds(mut generics: Generics) -> Generics {
     }
     generics
 }
-use syn::{ExprAssign, Ident, Result, Token, Expr, punctuated::*, Attribute};
+use syn::{ExprAssign, Ident, Result, Token, Expr, punctuated::*, Attribute, Expr::*};
+use quote::ToTokens;
 use syn::parse::ParseStream;
 use std::collections::HashSet;
 use proc_macro2::Span;
-
-
-
-trait Walk{
-    fn walk_and_parse<Output>(&mut self) -> Result<Output, ()>;    
-}
+use std::collections::HashMap;
 
 #[derive(Default)]
 struct Args{
-    primary_key : HashSet<Ident>,
-    secondary_keys: Vec<HashSet<Ident>>,
-    table_name: String,
-    keyspace : String,
+    primary_key : Option<Vec<String>>,
+    clustering_keys: Option<Vec<String>>,
+    table_name: Option<String>,
+    keyspace : Option<String>,
 }
+
+enum SinInputError{
+    E01,
+    E02,
+    E03,
+    E04
+}
+
+// impl TryFrom<Vec<ExprAssign>> for Args{
+//     type Error = SinInputError;
+
+//     fn try_from(value: Vec<ExprAssign>) -> std::result::Result<Self, Self::Error> {
+//         let map = value.into_iter()
+//             .map(|exp | {
+//                 let left = get_left_path(exp.left)?;
+//                 if left == 
+//                 let right = get_right_info(exp);
+//                 (left, right)
+//             })
+//             .collect::<HashMap<Ident, >>()
+//         Ok(Self::default())
+//     }
+// }
+
+// fn get_left_path(exp : Box<Expr>) -> std::result::Result<Ident, SinInputError>{
+//     match *exp{
+//         Path(path) => {
+//             path.path.get_ident().map(|i| i.clone()).ok_or(())
+//         },
+//         _ => Err(()),
+//     }
+// }
+
+// fn get_array_exp(exp : Box<Expr>) -> std::result::Result<(),SinInputError>{
+//     match *exp{
+//         Expr::Array(arr) =>,
+//         _ => Err(())
+//     }
+// }
+// }
 
 use syn::parse::Parse;
 /// #[read_functions(Table{pkey = (), skey = [(), ()], table_name = name, keyspace = name})]
 impl Parse for Args{
     fn parse(input: ParseStream) -> Result<Self>{
-        let fields = Punctuated::<ExprAssign, Token![,]>::parse_terminated(input)?;
-        let pkey_ident = Ident::new("primary_key", Span::call_site());
-        let skey_ident = Ident::new("secondary_key", Span::call_site());
-        let tname = Ident::new("table_name", Span::call_site());
-        let keysp = Ident::new("keyspace", Span::call_site());
+        let mut primary_key = None;
+        let mut clustering_keys = None; 
+        let mut table_name= None;
+        let mut keyspace= None;
 
-        let attr : Vec<ExprAssign> = fields.into_iter().collect();
-    
-        let out  = Self{
-            primary_key : attr.parse()?,
-            secondary_keys : attr.parse()?,
-            table_name : attr.parse()?,
-            keyspace : attr.parse()?,
-        };
-        return Ok(out);
-        panic!("{:?}", attr);
-        Ok(Self::default())
+        while !input.is_empty(){
+            let key: syn::Ident = input.parse()?;
+            let _eq = input.parse::<syn::Token![=]>()?;
+
+            match key.to_string().as_str(){
+                "table" => {
+                    let value : syn::Expr = input.parse()?;
+                    table_name = Some(value.to_token_stream().to_string());
+                },
+                "primary_key" =>{
+                    let value : Vec<String> =
+                        input
+                            .parse::<syn::ExprArray>()?
+                            .elems
+                            .into_iter()
+                            .map(|e| e.to_token_stream().to_string())
+                            .collect();
+                    
+                    primary_key = Some(value);
+                },
+                "clustering_key" =>{
+                    let value : Vec<String> =
+                        input
+                            .parse::<syn::ExprArray>()?
+                            .elems
+                            .into_iter()
+                            .map(|e| e.to_token_stream().to_string())
+                            .collect();
+                    
+                    clustering_keys = Some(value);
+                    
+                },
+                "keyspace" =>{
+                    let value : syn::Expr = input.parse()?;
+                    keyspace = Some(value.to_token_stream().to_string());
+                }
+                _ => {}
+            }
+            
+            if !input.is_empty(){
+                input.parse::<syn::Token![,]>()?;
+            }
+        }
+        
+        Ok(Self{
+            primary_key,
+            clustering_keys,
+            table_name,
+            keyspace
+        })
 
     }
 }
@@ -110,8 +184,19 @@ impl Parse for Args{
 #[proc_macro_attribute]
 pub fn read_functions(attrs: proc_macro::TokenStream, input : proc_macro::TokenStream) -> proc_macro::TokenStream{
     let args = parse_macro_input!(attrs as Args);
-    panic!("{}", input.to_string());
-    input
+    
+    let name = input.ident;
+
+    let find_functions = generate_find_functions(&input.data, args);
+    let create_function = generate_create_body(&input.data, args.table_name, args.keyspace);
+
+    let expanded = quote! {
+        impl #name{
+            
+        }
+    };
+    
+    proc_macro::TokenStream::from(expanded)
 }
       
         
