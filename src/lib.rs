@@ -5,6 +5,67 @@ use syn::{
     parse_macro_input, parse_quote, Data, DeriveInput, Fields, GenericParam, Generics,
 };
 
+#[proc_macro_derive(ToCqlData)]
+pub fn derive_to_cql(input : proc_macro::TokenStream) -> proc_macro::TokenStream{
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let name = input.ident;
+
+    // let generics = cql_trait_bounds(input.generics);
+    // let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
+    let derive_body = generate_derive_body(&input.data);
+
+    let expanded = quote! {
+        impl ToCqlData for #name{
+            fn to_cql(self) -> CqlType{
+                #derive_body
+            }
+        }
+    };
+    //panic!("{}", expanded.to_string());
+    proc_macro::TokenStream::from(expanded)
+}
+
+fn cql_trait_bounds(mut gen :Generics) -> Generics{
+    for param in &mut gen.params {
+        if let GenericParam::Type(ref mut type_param) = *param{
+            type_param.bounds.push(parse_quote!(ToCqlData));
+        }
+    }
+    gen
+}
+
+fn generate_derive_body(data : &Data) -> TokenStream{
+    match *data{
+        Data::Struct(ref data) => {
+            match data.fields{
+                Fields::Named(ref fields) =>{
+                    let capacity = fields.named.len();
+                    let field_itr =
+                        fields
+                            .named
+                            .iter()
+                            .map(|f| {
+                                let name = &f.ident;
+                                quote_spanned! {
+                                    f.span() => 
+                                        let value = ToCqlData::to_cql(self.#name);
+                                        res.push((stringify!(#name).to_string(), value));
+                                }
+                            });
+                    quote! {
+                        let mut res : Vec<(String, CqlType)> = Vec::with_capacity(#capacity);
+                        #(#field_itr)*
+                        CqlType::Row(res)
+                    }
+                }
+                _ => panic!("unnamed structs not supported")
+            }
+        }
+        _ => panic!("only structs supported")
+    }
+}
 
 #[proc_macro_derive(Gen)]
 pub fn derive_gen(input : proc_macro::TokenStream) -> proc_macro::TokenStream{
@@ -181,22 +242,24 @@ impl Parse for Args{
     }
 }
 
-#[proc_macro_attribute]
-pub fn read_functions(attrs: proc_macro::TokenStream, input : proc_macro::TokenStream) -> proc_macro::TokenStream{
-    let args = parse_macro_input!(attrs as Args);
+// #[proc_macro_attribute]
+// pub fn read_functions(attrs: proc_macro::TokenStream, input : proc_macro::TokenStream) -> proc_macro::TokenStream{
+//     let args = parse_macro_input!(attrs as Args);
     
-    let name = input.ident;
+//     let name = input.ident;
 
-    let find_functions = generate_find_functions(&input.data, args);
-    let create_function = generate_create_body(&input.data, args.table_name, args.keyspace);
+//     let find_functions = generate_find_functions(&input.data, &args);
+//     let create_function = generate_create_body(&input.data, args.table_name, args.keyspace);
 
-    let expanded = quote! {
-        impl #name{
+//     let expanded = quote! {
+//         impl #name{
             
-        }
-    };
+//         }
+//     };
     
-    proc_macro::TokenStream::from(expanded)
-}
+//     proc_macro::TokenStream::from(expanded)
+// }
       
-        
+// fn generate_find_functions(data: &Data, args: &Args) -> proc_macro::TokenStream{
+
+// }
