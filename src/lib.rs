@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
 use syn::{
-    parse_macro_input, parse_quote, Data, DeriveInput, Fields, GenericParam, Generics,
+    parse_macro_input, parse_quote, Data, DeriveInput, Fields, FieldsNamed, GenericParam, Generics
 };
 
 #[proc_macro_derive(ToCqlData)]
@@ -10,10 +10,6 @@ pub fn derive_to_cql(input : proc_macro::TokenStream) -> proc_macro::TokenStream
     let input = parse_macro_input!(input as DeriveInput);
 
     let name = input.ident;
-
-    // let generics = cql_trait_bounds(input.generics);
-    // let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-
     let derive_body = generate_derive_body(&input.data);
 
     let expanded = quote! {
@@ -23,18 +19,9 @@ pub fn derive_to_cql(input : proc_macro::TokenStream) -> proc_macro::TokenStream
             }
         }
     };
-    //panic!("{}", expanded.to_string());
     proc_macro::TokenStream::from(expanded)
 }
 
-fn cql_trait_bounds(mut gen :Generics) -> Generics{
-    for param in &mut gen.params {
-        if let GenericParam::Type(ref mut type_param) = *param{
-            type_param.bounds.push(parse_quote!(ToCqlData));
-        }
-    }
-    gen
-}
 
 fn generate_derive_body(data : &Data) -> TokenStream{
     match *data{
@@ -51,11 +38,11 @@ fn generate_derive_body(data : &Data) -> TokenStream{
                                 quote_spanned! {
                                     f.span() => 
                                         let value = ToCqlData::to_cql(self.#name);
-                                        res.push((stringify!(#name).to_string(), value));
+                                        res.insert(stringify!(#name).to_string(), value);
                                 }
                             });
                     quote! {
-                        let mut res : Vec<(String, CqlType)> = Vec::with_capacity(#capacity);
+                        let mut res : HashMap<String, CqlType> = HashMap::with_capacity(#capacity);
                         #(#field_itr)*
                         CqlType::Row(res)
                     }
@@ -66,6 +53,95 @@ fn generate_derive_body(data : &Data) -> TokenStream{
         _ => panic!("only structs supported")
     }
 }
+
+fn get_fields<'a>(data: &'a Data) -> Option<&'a FieldsNamed>{
+    match *data{
+        Data::Struct(ref data) => {
+            if let Fields::Named(ref fields) = data.fields{
+                return Some(fields)
+            }
+            None
+        },
+        _ => None
+    }
+}
+
+#[proc_macro_derive(FromCqlData)]
+pub fn derive_from_cql(input : proc_macro::TokenStream) -> proc_macro::TokenStream{
+    let input: DeriveInput = parse_macro_input!(input);
+    let name = input.ident;
+    
+    let fields :&FieldsNamed = get_fields(&input.data).expect("expected struct with named fields");
+    
+    let try_from = try_from_struct(fields);
+    let from_cql = from_cql_body();
+    let expanded = quote! {
+
+        impl TryFrom<&HashMap<String, CqlType>> for #name{
+            type Error = ();
+            fn try_from(map: &HashMap<String, CqlType>) -> Result<Self, Self::Error>{
+                Ok(Self{
+                    #try_from
+                })
+            }
+        }
+
+        impl FromCqlData for #name{
+            type Error = String;
+
+            fn from_cql(result : &CqlType) -> Result<Self, Self::Error>{
+                #from_cql
+            }
+        }
+    };
+
+    proc_macro::TokenStream::from(expanded)
+}
+
+fn try_from_struct(fields : &FieldsNamed) -> TokenStream{
+    let expanded = 
+        fields.named
+            .iter()
+            .map(|f| {
+                let name = &f.ident;
+                quote_spanned! {
+                    f.span() =>
+                        #name : {
+                            let value = map.get(stringify!(#name)).ok_or(())?;
+                            FromCqlData::from_cql(value)?
+                        },
+                }
+            });
+    quote!{
+        #(#expanded)*
+    }
+}
+
+fn from_cql_body() -> TokenStream{
+    quote! {
+        match result {
+            CqlType::Row(r) => {
+                r.try_into().map_err(|_e| "type mismatch".to_string())
+            },
+            _ => Err("only expecting row variant".to_string())
+        }
+    }
+}
+
+// fn generic_field_code_setter<F>(fields : &FieldsNamed , content : F) -> TokenStream
+// where
+//     F: FnOnce() -> TokenStream
+// {
+//     let res = fields.named.iter()
+//         .map(|f| {
+//             let name = &f.ident;
+//             content()
+//         });
+    
+//     quote! {
+//         #(#res)*
+//     }
+// }
 
 #[proc_macro_derive(Gen)]
 pub fn derive_gen(input : proc_macro::TokenStream) -> proc_macro::TokenStream{
@@ -197,7 +273,7 @@ impl Parse for Args{
                     let value : syn::Expr = input.parse()?;
                     table_name = Some(value.to_token_stream().to_string());
                 },
-                "primary_key" =>{
+                "partition_key" =>{
                     let value : Vec<String> =
                         input
                             .parse::<syn::ExprArray>()?
@@ -263,3 +339,37 @@ impl Parse for Args{
 // fn generate_find_functions(data: &Data, args: &Args) -> proc_macro::TokenStream{
 
 // }
+
+#[proc_macro_attribute]
+pub fn nosql(attrs: proc_macro::TokenStream, minput : proc_macro::TokenStream) -> proc_macro::TokenStream{
+    let args : Args = parse_macro_input!(attrs);
+    //let cinput = minput.clone();
+    let input: DeriveInput = parse_macro_input!(minput);
+    let table = args.table_name.expect("table name expected");
+    let keyspace = args.keyspace.expect("keyspace expected");
+    let name = input.ident.clone();
+    
+    let pre_req = quote!{
+        #[derive(sin::ToCqlData, sin::FromCqlData)]
+    };
+
+    let res = quote!{
+        impl NoSql for #name {
+            fn table_name() -> &'static str{
+                #table
+            }
+
+            fn keyspace() -> &'static str{
+                #keyspace
+            }
+        }
+
+    };
+
+    proc_macro::TokenStream::from(quote! {
+        #pre_req
+        #input
+        #res
+    })
+
+}
