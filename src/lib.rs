@@ -5,25 +5,35 @@ use syn::{
     parse_macro_input, parse_quote, Data, DeriveInput, Fields, FieldsNamed, GenericParam, Generics
 };
 
+use syn::Result;
+use quote::ToTokens;
+use syn::parse::ParseStream;
+use proc_macro2::Span;
+
 #[proc_macro_derive(ToCqlData)]
 pub fn derive_to_cql(input : proc_macro::TokenStream) -> proc_macro::TokenStream{
     let input = parse_macro_input!(input as DeriveInput);
 
     let name = input.ident;
-    let derive_body = generate_derive_body(&input.data);
-
-    let expanded = quote! {
-        impl ToCqlData for #name{
-            fn to_cql(self) -> CqlType{
-                #derive_body
-            }
+    match generate_derive_body(&input.data){
+        Ok(derive_body) => {
+            let expanded = quote! {
+                impl ToCqlData for #name{
+                    fn to_cql(self) -> CqlType{
+                        #derive_body
+                    }
+                }
+            };
+            proc_macro::TokenStream::from(expanded)
+        },
+        Err(error) => {
+            proc_macro::TokenStream::from(error)
         }
-    };
-    proc_macro::TokenStream::from(expanded)
+    }
 }
 
 
-fn generate_derive_body(data : &Data) -> TokenStream{
+fn generate_derive_body(data : &Data) -> std::result::Result<TokenStream, TokenStream>{
     match *data{
         Data::Struct(ref data) => {
             match data.fields{
@@ -41,16 +51,16 @@ fn generate_derive_body(data : &Data) -> TokenStream{
                                         res.insert(stringify!(#name).to_string(), value);
                                 }
                             });
-                    quote! {
+                    Ok(quote! {
                         let mut res : HashMap<String, CqlType> = HashMap::with_capacity(#capacity);
                         #(#field_itr)*
                         CqlType::Row(res)
-                    }
+                    })
                 }
-                _ => panic!("unnamed structs not supported")
+                _ => Err(syn::Error::new(Span::call_site(), "unnamed structs not supported").to_compile_error()) 
             }
         }
-        _ => panic!("only structs supported")
+        _ => Err(syn::Error::new(Span::call_site(), "only structs supported").to_compile_error()) 
     }
 }
 
@@ -71,7 +81,17 @@ pub fn derive_from_cql(input : proc_macro::TokenStream) -> proc_macro::TokenStre
     let input: DeriveInput = parse_macro_input!(input);
     let name = input.ident;
     
-    let fields :&FieldsNamed = get_fields(&input.data).expect("expected struct with named fields");
+    let fields :&FieldsNamed = match get_fields(&input.data){
+        Some(a) => a,
+        None => {
+            return
+                proc_macro::TokenStream::from(
+                    syn::Error::new(Span::call_site(),
+                        "expected struct with named fields")
+                    .to_compile_error()
+                )
+        }
+    };
     
     let try_from = try_from_struct(fields);
     let from_cql = from_cql_body();
@@ -127,21 +147,6 @@ fn from_cql_body() -> TokenStream{
         }
     }
 }
-
-// fn generic_field_code_setter<F>(fields : &FieldsNamed , content : F) -> TokenStream
-// where
-//     F: FnOnce() -> TokenStream
-// {
-//     let res = fields.named.iter()
-//         .map(|f| {
-//             let name = &f.ident;
-//             content()
-//         });
-    
-//     quote! {
-//         #(#res)*
-//     }
-// }
 
 #[proc_macro_derive(Gen)]
 pub fn derive_gen(input : proc_macro::TokenStream) -> proc_macro::TokenStream{
@@ -200,26 +205,13 @@ fn gen_trait_bounds(mut generics: Generics) -> Generics {
     }
     generics
 }
-use syn::{ExprAssign, Ident, Result, Token, Expr, punctuated::*, Attribute, Expr::*};
-use quote::ToTokens;
-use syn::parse::ParseStream;
-use std::collections::HashSet;
-use proc_macro2::Span;
-use std::collections::HashMap;
 
 #[derive(Default)]
 struct Args{
-    primary_key : Option<Vec<String>>,
-    clustering_keys: Option<Vec<String>>,
+    _primary_key : Option<Vec<String>>,
+    _clustering_keys: Option<Vec<String>>,
     table_name: Option<String>,
     keyspace : Option<String>,
-}
-
-enum SinInputError{
-    E01,
-    E02,
-    E03,
-    E04
 }
 
 // impl TryFrom<Vec<ExprAssign>> for Args{
@@ -259,8 +251,8 @@ use syn::parse::Parse;
 /// #[read_functions(Table{pkey = (), skey = [(), ()], table_name = name, keyspace = name})]
 impl Parse for Args{
     fn parse(input: ParseStream) -> Result<Self>{
-        let mut primary_key = None;
-        let mut clustering_keys = None; 
+        let mut _primary_key = None;
+        let mut _clustering_keys = None; 
         let mut table_name= None;
         let mut keyspace= None;
 
@@ -282,7 +274,7 @@ impl Parse for Args{
                             .map(|e| e.to_token_stream().to_string())
                             .collect();
                     
-                    primary_key = Some(value);
+                    _primary_key = Some(value);
                 },
                 "clustering_key" =>{
                     let value : Vec<String> =
@@ -293,7 +285,7 @@ impl Parse for Args{
                             .map(|e| e.to_token_stream().to_string())
                             .collect();
                     
-                    clustering_keys = Some(value);
+                    _clustering_keys = Some(value);
                     
                 },
                 "keyspace" =>{
@@ -309,8 +301,8 @@ impl Parse for Args{
         }
         
         Ok(Self{
-            primary_key,
-            clustering_keys,
+            _primary_key,
+            _clustering_keys,
             table_name,
             keyspace
         })
@@ -318,32 +310,9 @@ impl Parse for Args{
     }
 }
 
-// #[proc_macro_attribute]
-// pub fn read_functions(attrs: proc_macro::TokenStream, input : proc_macro::TokenStream) -> proc_macro::TokenStream{
-//     let args = parse_macro_input!(attrs as Args);
-    
-//     let name = input.ident;
-
-//     let find_functions = generate_find_functions(&input.data, &args);
-//     let create_function = generate_create_body(&input.data, args.table_name, args.keyspace);
-
-//     let expanded = quote! {
-//         impl #name{
-            
-//         }
-//     };
-    
-//     proc_macro::TokenStream::from(expanded)
-// }
-      
-// fn generate_find_functions(data: &Data, args: &Args) -> proc_macro::TokenStream{
-
-// }
-
 #[proc_macro_attribute]
 pub fn nosql(attrs: proc_macro::TokenStream, minput : proc_macro::TokenStream) -> proc_macro::TokenStream{
     let args : Args = parse_macro_input!(attrs);
-    //let cinput = minput.clone();
     let input: DeriveInput = parse_macro_input!(minput);
     let table = args.table_name.expect("table name expected");
     let keyspace = args.keyspace.expect("keyspace expected");
